@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import ctranslate2  # must be imported before PyQt5: PyQt5 bundles an older msvcp140.dll that makes ctranslate2 crash on Windows
 from audioplayer import AudioPlayer
 from pynput.keyboard import Controller
 from PyQt5.QtCore import QObject, QProcess
@@ -63,7 +64,7 @@ class WhisperWriterApp(QObject):
             self.status_window = StatusWindow()
 
         self.create_tray_icon()
-        self.main_window.show()
+        self.key_listener.start()
 
     def create_tray_icon(self):
         """
