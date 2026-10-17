@@ -389,6 +389,8 @@ class KeyListener:
             return
 
         key, event_type = event
+        if key is None:
+            return
 
         was_active = self.key_chord.is_active()
         is_active = self.key_chord.update(key, event_type)
@@ -769,6 +771,12 @@ class PynputBackend(InputBackend):
             self.mouse = mouse
             self.key_map = self._create_key_map()
 
+        # Keep running listeners instead of stacking new ones on every call
+        if self.keyboard_listener and self.keyboard_listener.is_alive() and \
+                self.mouse_listener and self.mouse_listener.is_alive():
+            return
+        self.stop()
+
         self.keyboard_listener = self.keyboard.Listener(
             on_press=self._on_keyboard_press,
             on_release=self._on_keyboard_release
@@ -788,27 +796,30 @@ class PynputBackend(InputBackend):
             self.mouse_listener.stop()
             self.mouse_listener = None
 
-    def _translate_key_event(self, native_event) -> tuple[KeyCode, InputEvent]:
+    def _translate_key_event(self, native_event) -> tuple[KeyCode | None, InputEvent]:
         """Translate a pynput event to our internal event representation."""
         pynput_key, is_press = native_event
-        key_code = self.key_map.get(pynput_key, KeyCode.SPACE)
+        key_code = self.key_map.get(pynput_key)
         event_type = InputEvent.KEY_PRESS if is_press else InputEvent.KEY_RELEASE
         return key_code, event_type
 
     def _on_keyboard_press(self, key):
         """Handle keyboard press events."""
         translated_event = self._translate_key_event((key, True))
-        self.on_input_event(translated_event)
+        if translated_event[0] is not None:
+            self.on_input_event(translated_event)
 
     def _on_keyboard_release(self, key):
         """Handle keyboard release events."""
         translated_event = self._translate_key_event((key, False))
-        self.on_input_event(translated_event)
+        if translated_event[0] is not None:
+            self.on_input_event(translated_event)
 
     def _on_mouse_click(self, x, y, button, pressed):
         """Handle mouse click events."""
         translated_event = self._translate_key_event((button, pressed))
-        self.on_input_event(translated_event)
+        if translated_event[0] is not None:
+            self.on_input_event(translated_event)
 
     def _create_key_map(self):
         """Create a mapping from pynput keys to our internal KeyCode enum."""
