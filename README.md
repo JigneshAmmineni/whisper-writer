@@ -6,6 +6,74 @@
     <img src="./assets/ww-demo-image-02.gif" alt="WhisperWriter demo gif" width="340" height="136">
 </p>
 
+> **About this fork.** This is my fork of [savbell/whisper-writer](https://github.com/savbell/whisper-writer), the original app by [@savbell](https://github.com/savbell). I set it up as a fully offline push-to-talk dictation tool on a Windows 11 laptop that has no NVIDIA GPU. To get it running there, I fixed the broken install, a crash on launch, and three Windows bugs that are still open upstream. My changes are summarized below. The rest of this README is the upstream documentation.
+
+## What this fork changes
+
+### How I run it locally
+
+Tap F9, speak, and tap F9 again. The text is pasted into whichever window has focus. Audio stays in memory and is never sent off the machine.
+
+1. **Hotkey.** A global `pynput` keyboard hook listens for the activation key in `press_to_toggle` mode.
+2. **Recording.** `sounddevice` records the microphone at 16 kHz mono into a NumPy array. Nothing is written to disk.
+3. **Transcription.** `faster-whisper` runs OpenAI's open-source Whisper `base.en` model (74M parameters, English only) on the CPU.
+4. **Output.** The text is placed on the clipboard and pasted with Ctrl+V. The previous clipboard text is restored afterwards.
+
+**Working within the hardware.** The laptop has Intel Iris Xe integrated graphics and 16 GB of RAM. With no CUDA available, the model has to be small and fast on the CPU:
+
+- **Model.** The weights are OpenAI's Whisper `base.en`, in [Systran's CTranslate2 conversion](https://huggingface.co/Systran/faster-whisper-base.en) (142 MB, float16 on disk).
+- **Runtime.** It runs on [CTranslate2](https://github.com/OpenNMT/CTranslate2) through `faster-whisper` instead of OpenAI's PyTorch reference code. The weights are the same, but it is roughly 2 to 4x faster on CPU and uses a fraction of the memory.
+- **Quantization.** I set `compute_type: int8`, which makes CTranslate2 quantize the weights to 8-bit integers when it loads them. The file on disk isn't changed and there is no separate conversion step. `int8` also pins inference to the CPU.
+
+My local `src/config.yaml` (gitignored, so it isn't in this repo):
+
+```yaml
+model_options:
+  use_api: false
+  local:
+    model: base.en
+    device: cpu
+    compute_type: int8
+recording_options:
+  activation_key: f9
+  recording_mode: press_to_toggle
+```
+
+**Measured on this laptop:**
+
+| Recording length | Transcription time |
+|---|---|
+| 5.6 s | 1.02 s |
+| 24.9 s | 2.22 s |
+| 32.7 s | 2.65 s |
+
+The model loads in about 1.4 s once the OS has the file cached, and in 4 to 10 s from a cold start. While idle, the app uses about 250 MB of RAM and roughly 0.2% of one CPU core. On Windows the hotkey is an OS-level hook, so nothing polls. For better accuracy on proper nouns, `small.en` can be swapped in. It is slower and about a 250 MB download.
+
+### Fixes and changes to upstream
+
+**Install on Python 3.13** ([`5345d3a`](https://github.com/JigneshAmmineni/whisper-writer/commit/5345d3a)). The upstream `requirements.txt` is a UTF-16 `pip freeze` with 77 pins from 2024. It no longer installs on Windows because `av==11.0.0` has no wheels on PyPI anymore (upstream #139, #142). I replaced it with 12 loosely pinned dependencies that install from prebuilt wheels on Python 3.13. `av` is capped below 19 because `faster-whisper` 1.2.1 still passes the `metadata_errors` argument that PyAV 19 removed.
+
+**Crash on launch** ([`5345d3a`](https://github.com/JigneshAmmineni/whisper-writer/commit/5345d3a)). The app died with a native access violation inside the `WhisperModel` constructor, without a Python traceback. I narrowed it down: just importing PyQt5 before loading the model was enough to trigger it. PyQt5 ships an older `msvcp140.dll`, and ctranslate2 faults when it binds to that runtime. The fix is to import `ctranslate2` before PyQt5 in `src/main.py`. This is likely the crash in upstream #47.
+
+**Start listening at launch** ([`5345d3a`](https://github.com/JigneshAmmineni/whisper-writer/commit/5345d3a)). The hotkey listener now starts as soon as the model loads, so there's no window or Start button to click first. Settings and Exit are still in the tray menu.
+
+**Hotkey firing on the wrong keys** ([`4cee72e`](https://github.com/JigneshAmmineni/whisper-writer/commit/4cee72e), upstream #65). On Windows, the default `ctrl+shift+space` hotkey also fired on any ctrl+shift+letter. Two things combined to cause this. The pynput backend translated every key it didn't recognize to Space, and with Ctrl held, Windows reports letters as control characters that are missing from the key map. Unknown keys and mouse buttons are now dropped instead.
+
+**Listener leak** ([`4cee72e`](https://github.com/JigneshAmmineni/whisper-writer/commit/4cee72e)). `start()` ran after every transcription and created a new keyboard hook and mouse hook each time without stopping the old ones. As a result, every keystroke passed through more and more hooks. `start()` now keeps live listeners and only recreates them if one has died, so the app can't go deaf after a callback error.
+
+**Dropped or doubled characters** ([`4cee72e`](https://github.com/JigneshAmmineni/whisper-writer/commit/4cee72e), upstream #140, #85, #114). Upstream types the text one keystroke at a time, and some Windows apps can't keep up. I added a `clipboard` input method and made it the default. The clipboard is restored with a Qt timer instead of `time.sleep`, because Windows serves the paste request through the app's own event loop, and blocking that loop would stall the paste. Choose `pynput` in settings for terminals like Git Bash, where Ctrl+V doesn't paste.
+
+**Verification.** Each fix was checked with synthetic key and mouse events against both the old and new code. Both bugs reproduced on the old code and were gone on the new code. The clipboard path was also checked with a stubbed keyboard, and the app was launched live. Before I ran it, I also read through the upstream code (about 2,300 lines) for security. I found no `eval`/`exec`/`pickle` and no network calls other than the optional OpenAI API client, and nothing records keystrokes beyond the set of currently held keys.
+
+### Known limitations
+
+- The clipboard restore only brings back plain text. Rich text comes back as plain text, and images or files are lost.
+- If Windows clipboard history is on, it records each transcription.
+- Pasting doesn't work into elevated (admin) windows, because of Windows UIPI.
+- Text appears one to three seconds after you stop talking, not live.
+
+## Original README
+
 **Update (2024-05-28):** I've just merged in a major rewrite of WhisperWriter! We've migrated from using `tkinter` to using `PyQt5` for the UI, added a new settings window for configuration, a new continuous recording mode, support for a local API, and more! Please be patient as I work out any bugs that may have been introduced in the process. If you encounter any problems, please [open a new issue](https://github.com/savbell/whisper-writer/issues)!
 
 WhisperWriter is a small speech-to-text app that uses [OpenAI's Whisper model](https://openai.com/research/whisper) to auto-transcribe recordings from a user's microphone to the active window.
